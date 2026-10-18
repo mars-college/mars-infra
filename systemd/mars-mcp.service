@@ -1,0 +1,32 @@
+# Example rootless systemd --user unit; not a deployment inventory.
+# Review paths, image, and local user-manager setup before installing.
+# Keep runtime.env mode 0600 and the persistent state directory mode 0700,
+# both owned by the local account running this unit.
+[Unit]
+Description=Mars College MCP server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# Pass secrets directly to Podman via --env-file, never into the unit environment.
+# PORT must match runtime.env; loopback publication is intentional.
+Environment=CONTAINER=mars-mcp
+Environment=PORT=4400
+# --init forwards signals and reaps child processes inside the container.
+ExecStartPre=-/usr/bin/podman rm -f ${CONTAINER}
+# Map the local account to the image's node user (uid/gid 1000) so it can
+# access private persistent auth state without relaxing host permissions.
+ExecStart=/usr/bin/podman run --rm --init --name ${CONTAINER} \
+    --env-file %h/.config/mars-mcp/runtime.env \
+    --userns=keep-id:uid=1000,gid=1000 \
+    --env AUTH_DATABASE_PATH=/state/auth.sqlite \
+    --volume %h/.local/state/mars-mcp:/state:rw \
+    --publish 127.0.0.1:${PORT}:${PORT} \
+    localhost/mars-mcp:latest
+ExecStop=/usr/bin/podman stop -t 10 ${CONTAINER}
+TimeoutStopSec=20
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=default.target

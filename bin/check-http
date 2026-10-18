@@ -1,0 +1,170 @@
+#!/usr/bin/env python3
+"""Read-only Mars HTTP readiness probes; never send credentials or follow redirects."""
+import argparse
+import ipaddress
+import json
+import http.client
+import re
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+
+DEFAULT_URL = "https://mcp.mars.college"
+TIMEOUT = 3
+MAX_BODY = 65536
+
+
+class CheckError(Exception):
+    pass
+
+
+def origin_from_url(value):
+    if not value.isascii() or any(ord(c) <= 32 or ord(c) == 127 for c in value) or "\\" in value:
+        raise ValueError("URL must be ASCII without whitespace or backslashes")
+    try:
+        url = urllib.parse.urlsplit(value)
+        port = url.port
+        host = url.hostname
+    except ValueError:
+        raise ValueError("invalid URL") from None
+    if (url.scheme not in ("https", "http") or not host or url.username is not None
+            or url.password is not None or url.query or url.fragment or "?" in value or "#" in value
+            or url.path not in ("", "/", "/mcp")):
+        raise ValueError("use an origin or /mcp URL without credentials, query, or fragment")
+    # Reject malformed authorities rather than relying on permissive URL parsing.
+    authority = f"[{host}]" if ":" in host else host
+    if port is not None:
+        authority += f":{port}"
+    if url.netloc.lower() != authority or port == 0:
+        raise ValueError("invalid URL authority")
+    try:
+        loopback = ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        loopback = host == "localhost"
+        if not re.fullmatch(r"[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?", host):
+            raise ValueError("invalid hostname") from None
+    if url.scheme == "http" and not loopback:
+        raise ValueError("HTTP is allowed only for loopback fixtures/local services")
+    return f"{url.scheme}://{authority}"
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def fetch(opener, origin, path):
+    request = urllib.request.Request(origin + path, headers={"Accept": "application/json", "User-Agent": "mars-infra-check/1"})
+    try:
+        response = opener.open(request, timeout=TIMEOUT)
+    except urllib.error.HTTPError as error:
+        response = error
+    except (OSError, urllib.error.URLError, ValueError, http.client.HTTPException):
+        raise CheckError("request failed (network/TLS/timeout)") from None
+    try:
+        with response:
+            body = response.read(MAX_BODY + 1)
+            status, headers = response.status, response.headers
+    except (OSError, ValueError, http.client.HTTPException):
+        raise CheckError("response could not be read") from None
+    if 300 <= status < 400:
+        raise CheckError("redirect refused")
+    if len(body) > MAX_BODY:
+        raise CheckError("response exceeds 64 KiB")
+    return status, headers, body
+
+
+def json_object(response):
+    status, headers, body = response
+    if status != 200:
+        raise CheckError(f"expected HTTP 200, got {status}")
+    if headers.get_content_type() != "application/json":
+        raise CheckError("expected JSON content type")
+    try:
+        value = json.loads(body)
+    except (ValueError, UnicodeError, RecursionError):
+        raise CheckError("invalid JSON") from None
+    if not isinstance(value, dict):
+        raise CheckError("expected JSON object")
+    return value
+
+def supports(value, key, expected):
+    entries = value.get(key)
+    return isinstance(entries, list) and expected in entries
+
+
+
+def require(condition, message):
+    if not condition:
+        raise CheckError(message)
+
+
+def check_health(response, origin):
+    value = json_object(response)
+    require(value.get("ok") is True and value.get("service") == "mars-mcp", "unexpected health identity/status")
+
+
+def check_resource(response, origin):
+    value = json_object(response)
+    require(value.get("resource") == origin + "/mcp", "resource does not match requested origin /mcp")
+    require(value.get("authorization_servers") == [origin], "issuer must be this origin only")
+    require(supports(value, "scopes_supported", "mars.read"), "mars.read scope missing")
+    require(supports(value, "bearer_methods_supported", "header"), "header bearer method missing")
+
+
+def check_authorization(response, origin):
+    value = json_object(response)
+    require(value.get("issuer") == origin, "issuer does not match requested origin")
+    for key, path in (("authorization_endpoint", "/authorize"), ("token_endpoint", "/token"),
+                      ("registration_endpoint", "/register"), ("revocation_endpoint", "/revoke")):
+        require(value.get(key) == origin + path, "missing or unexpected same-origin " + key)
+    for key, expected in (("code_challenge_methods_supported", "S256"), ("response_types_supported", "code"),
+                          ("grant_types_supported", "authorization_code"),
+                          ("token_endpoint_auth_methods_supported", "none"), ("scopes_supported", "mars.read")):
+        require(supports(value, key, expected), "required OAuth capability missing: " + key)
+
+
+def check_denial(response, origin):
+    status, headers, _ = response
+    require(status == 401, f"expected unauthenticated HTTP 401, got {status}")
+    challenge = headers.get("WWW-Authenticate", "")
+    require(re.match(r"^Bearer\s", challenge, re.IGNORECASE) is not None, "Bearer challenge missing")
+    links = re.findall(r'\bresource_metadata="([^"\r\n]+)"', challenge)
+    require(len(links) == 1 and links[0] in (origin + "/.well-known/oauth-protected-resource",
+            origin + "/.well-known/oauth-protected-resource/mcp"), "same-origin metadata challenge missing")
+
+
+def run(origin):
+    # Ignore proxy environment variables; these probes must contact only the supplied origin.
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+    probes = (("health", "/healthz", check_health),
+              ("protected resource", "/.well-known/oauth-protected-resource/mcp", check_resource),
+              ("authorization discovery", "/.well-known/oauth-authorization-server", check_authorization),
+              ("MCP anonymous denial", "/mcp", check_denial))
+    failed = False
+    for label, path, check in probes:
+        try:
+            check(fetch(opener, origin, path), origin)
+        except CheckError as error:
+            print(f"FAIL {label}: {error}")
+            failed = True
+        else:
+            print(f"PASS {label}")
+    print("NOT READY: one or more HTTP checks failed" if failed else "HTTP READY: login and resource access still require separate verification")
+    return 1 if failed else 0
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("url", nargs="?", default=DEFAULT_URL, help="HTTPS origin or /mcp URL; HTTP only on loopback")
+    args = parser.parse_args()
+    try:
+        origin = origin_from_url(args.url)
+    except ValueError as error:
+        parser.error(str(error))
+    return run(origin)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

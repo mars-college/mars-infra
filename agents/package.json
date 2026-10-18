@@ -1,0 +1,24 @@
+{
+  "name": "@mars-college/character-agents",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22.13" },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "smoke": "node --import tsx scripts/smoke.ts",
+    "start": "node dist/start.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "discord.js": "^14.22.1",
+    "yaml": "^2.8.1",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.22.0",
+    "typescript": "^5.7.0"
+  }
+}

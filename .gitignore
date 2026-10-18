@@ -1,0 +1,27 @@
+# Python fixture/checker caches
+__pycache__/
+*.py[cod]
+
+# Never stage operator credentials, local configuration, or auth-state backups.
+.env
+.env.*
+*.env
+*.key
+*.pem
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-*
+private/
+.private/
+*.private.json
+*.local.yaml
+*.local.yml
+
+# Local character gateway dependencies, builds, state and private overlays.
+agents/node_modules/
+agents/dist/
+agents/.local/
+!agents/.env.example

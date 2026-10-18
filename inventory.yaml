@@ -1,0 +1,22 @@
+# Intentionally public interfaces only. Deployment and private resource inventory
+# belong outside this repository. An entry is not a live-readiness assertion.
+repositories:
+  mars_mcp:
+    url: https://github.com/mars-college/mars-mcp
+    responsibility: MCP application, member authorization, synthetic resource demo
+  mars_infra:
+    url: https://github.com/mars-college/mars-infra
+    responsibility: local character gateway, checks, generic service example
+maintainers:
+  - github: jmilldotdev
+  - github: genekogan
+access_policy:
+  members: Discord membership and explicit role mapping govern MCP access
+  contributions: anyone may submit a PR; maintainers review before exposure
+  private_data: repository access does not grant community-data access
+  approvals: human maintainers approve permissions and production changes
+services:
+  mars_mcp:
+    public_origin: https://mcp.mars.college
+    resource: https://mcp.mars.college/mcp
+    deployment_status: not_verified

@@ -1,0 +1,31 @@
+# Synthetic IDs/context only. Copy outside the repo before using real settings.
+guild_id: "100"
+bot_token_env: DISCORD_BOT_TOKEN
+channels:
+  - id: "200"
+    webhook_env: DISCORD_CHANNEL_WEBHOOK
+context_root: ../examples/context
+state_root: ../.local
+claude_command: claude
+timeout_ms: 90000
+max_queue: 10
+characters:
+  - id: chiba
+    name: Chiba
+    role_id: "301"
+    prompt: You are Chiba, a concise, friendly navigator for this fictional example community.
+    context_files: [guide.md]
+    resources: []
+    allowed_member_roles: []
+  - id: andy8
+    name: Andy8
+    role_id: "302"
+    prompt: You are Andy8, a practical kitchen helper for this fictional example community.
+    context_files: [kitchen.md]
+    resources: []
+    allowed_member_roles: []
+# Optional: configured characters can also read named MCP resources.
+# mcp:
+#   url: http://127.0.0.1:4400/mcp
+#   token_env: MARS_MCP_TOKEN
+# Set resources on a character, and optionally its own mcp_token_env.
