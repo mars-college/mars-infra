@@ -16,7 +16,7 @@ export interface CharacterDiscord {
   createRole(name: string): Promise<string>;
   editRole(id: string, name: string): Promise<void>;
   deleteRole(id: string): Promise<void>;
-  send(character: RegisteredCharacter, channelId: string, content: string, replyToMessageId?: string): Promise<{ id: string }>;
+  send(character: RegisteredCharacter, channelId: string, content: string, replyToMessageId?: string): Promise<{ id: string; messageIds?: string[] }>;
 }
 const snowflake = z.string().regex(/^\d{1,22}$/);
 const actor = z.object({ actorDiscordId: snowflake });
@@ -94,7 +94,7 @@ export class CharacterRegistry {
     const character = this.#owned(id, value.actorDiscordId);
     if (!character.channelIds.includes(value.channelId) || !this.config.channels.some(channel => channel.id === value.channelId)) throw new CharacterError('channel_not_allowed', 403);
     const sent = await this.discord.send(character, value.channelId, value.content, value.replyToMessageId);
-    this.recordReply(sent.id, character.id, value.channelId);
+    for (const messageId of sent.messageIds ?? [sent.id]) this.recordReply(messageId, character.id, value.channelId);
     return { messageId: sent.id, channelId: value.channelId, characterId: id };
   }
   recordReply(messageId: string, characterId: string, channelId: string) {

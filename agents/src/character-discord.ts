@@ -26,12 +26,13 @@ export function characterDiscord(config: GatewayConfig, token: string): Characte
         webhook = new WebhookClient({ url }); hooks.set(channelId, webhook);
       }
       const text = replyToMessageId ? `${content}\n\n↪ https://discord.com/channels/${config.guild_id}/${channelId}/${replyToMessageId}` : content;
-      let sent: { id: string } | undefined;
+      const messageIds: string[] = [];
       for (const chunk of discordChunks(text)) {
-        sent = await webhook.send({ content: chunk, username: character.name, avatarURL: character.avatarUrl ?? undefined,
+        const sent = await webhook.send({ content: chunk, username: character.name, avatarURL: character.avatarUrl ?? undefined,
           allowedMentions: { parse: [], users: [], roles: [], repliedUser: false } });
+        messageIds.push(sent.id);
       }
-      return { id: sent!.id };
+      return { id: messageIds.at(-1)!, messageIds };
     },
     close() { for (const webhook of hooks.values()) webhook.destroy(); },
   };

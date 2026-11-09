@@ -23,7 +23,11 @@ async function fixture() {
     async createRole(name: string) { roles.push(name); return String(700 + roles.length); },
     async editRole(_id: string, name: string) { roles.push(`edit:${name}`); },
     async deleteRole(id: string) { roles.push(`delete:${id}`); },
-    async send(character: { name: string }, channelId: string, content: string) { sent.push({ character: character.name, channelId, content }); return { id: String(800 + sent.length) }; },
+    async send(character: { name: string }, channelId: string, content: string) {
+      sent.push({ character: character.name, channelId, content });
+      const id = String(800 + sent.length);
+      return { id, messageIds: content.length > 2000 ? [String(9000 + sent.length), id] : [id] };
+    },
   };
   const path = join(directory, 'characters.sqlite');
   const registry = new CharacterRegistry(path, config, discord);
@@ -45,7 +49,9 @@ test('SQLite registry persists owners, rejects non-owner edit/delete/speak, and 
     assert.equal(reopened.get('chiba').description, 'Owner changed prompt');
     assert.throws(() => reopened.get(f.config.characters[1]!.id), /not_found/);
     reopened.close();
-    await f.registry.say(character.id, { actorDiscordId: '601', channelId: '200', content: 'hello' });
+    await f.registry.say(character.id, { actorDiscordId: '601', channelId: '200', content: 'x'.repeat(3000) });
+    assert.equal(f.registry.replyCharacter('9001', '200'), character.id);
+    assert.equal(f.registry.replyCharacter('801', '200'), character.id);
     await assert.rejects(f.registry.say(character.id, { actorDiscordId: '601', channelId: '999', content: 'hello' }), /channel_not_allowed/);
   } finally { await f.close(); }
 });
