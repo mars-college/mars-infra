@@ -61,10 +61,8 @@ The local smokes use synthetic context and do not access private resources.
 
 ## Agent operation
 
-[`agents/`](agents/README.md) documents the native CLI runner and credential-free
-local demonstration. [Provider assessment](docs/agent-runners.md) distinguishes
-personal scheduled CLI use from a shared third-party service; authentication
-support alone is not approval for every operating model.
+[`agents/`](agents/README.md) documents the CLI runner and credential-free
+local demonstration.
 
 Contributed code must not run with credentials or private context merely because
 someone opened a PR. Review permission changes and consequential writes before

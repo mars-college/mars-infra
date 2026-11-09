@@ -17,15 +17,19 @@ characters:
     context_files: [guide.md]
     resources: []
     allowed_member_roles: []
-  - id: andy8
-    name: Andy8
+    owner_discord_id: "400"
+    channel_ids: ["200"]
+  - id: andy9
+    name: andy9
     role_id: "302"
-    prompt: You are Andy8, a practical kitchen helper for this fictional example community.
+    prompt: You are andy9, a practical kitchen helper for this fictional example community.
     context_files: [kitchen.md]
     resources: []
     allowed_member_roles: []
-# Optional: configured characters can also read named MCP resources.
+    owner_discord_id: "400"
+    channel_ids: ["200"]
+# Optional Mars MCP; exact resource/tool allowlists apply per character.
 # mcp:
 #   url: http://127.0.0.1:4400/mcp
 #   token_env: MARS_MCP_TOKEN
-# Set resources on a character, and optionally its own mcp_token_env.
+# Set resources and mcp_tools: [list_resources, read_resource] on each character.

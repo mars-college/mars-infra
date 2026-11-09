@@ -10,6 +10,8 @@ import { loadConfig } from '../src/config.js';
 import { CharacterEngine } from '../src/engine.js';
 import { startDiscord, type WebhookPayload } from '../src/discord.js';
 
+const realClaude = process.env.SMOKE_REAL_CLAUDE === '1';
+const turnLatencies: Array<{ character: string; latencyMs: number }> = [];
 const directory = await mkdtemp(join(tmpdir(), 'mars-gateway-smoke-'));
 const delivered: Array<{ channelId: string; payload: WebhookPayload }> = [];
 const errors: string[] = [];
@@ -41,10 +43,10 @@ const address = server.address();
 if (!address || typeof address === 'string') throw new Error('Expected fixture TCP address');
 const origin = `http://127.0.0.1:${address.port}`;
 const config = await loadConfig(new URL('../config/example.yaml', import.meta.url).pathname);
-config.claude_command = new URL('../tests/fixtures/claude.mjs', import.meta.url).pathname;
+if (!realClaude) config.claude_command = new URL('../tests/fixtures/claude.mjs', import.meta.url).pathname;
 config.state_root = directory;
 config.mcp = { url: `${origin}/mcp` };
-config.characters[0]!.context_files = [];
+if (!realClaude) config.characters[0]!.context_files = [];
 config.characters[0]!.resources = ['mars://demo/role-gated'];
 config.characters[1]!.allowed_member_roles = ['777'];
 const engine = new CharacterEngine(config);
@@ -68,20 +70,39 @@ const gateway = await startDiscord(config, engine, {
 });
 try {
   const base = { id: '1', guildId: '100', channelId: '200', authorId: '400', bot: false };
-  await gateway.handle({ ...base, content: '<@&301> Where is Copper Finch?' });
+  let started = performance.now();
+  await gateway.handle({ ...base, content: realClaude
+    ? '<@&301> Introduce yourself by name, then briefly say when weekly dinner is and where Copper Finch is. Cite both sources. Keep it to two short sentences.'
+    : '<@&301> Where is Copper Finch?' });
+  turnLatencies.push({ character: 'Chiba', latencyMs: Math.round(performance.now() - started) });
   assert.equal(delivered.length, 1);
   assert.equal(delivered[0]!.payload.username, 'Chiba');
   assert.match(delivered[0]!.payload.content, /fictional demo shed/);
   assert.match(delivered[0]!.payload.content, /mars:\/\/demo\/role-gated/);
+  if (realClaude) {
+    assert.match(delivered[0]!.payload.content, /Chiba/);
+    assert.match(delivered[0]!.payload.content, /Tuesday.*6\s*(?:PM|p\.?m\.?)/i);
+    assert.match(delivered[0]!.payload.content, /guide\.md/);
+  }
   await gateway.handle({ ...base, id: '2', content: '<@&302> Where do plates go?' });
   assert.equal(delivered.length, 1);
   memberRoles = ['777'];
-  await gateway.handle({ ...base, id: '3', content: '<@&302> Where do plates go?' });
+  started = performance.now();
+  await gateway.handle({ ...base, id: '3', content: realClaude
+    ? '<@&302> Introduce yourself by name and tell me where clean plates go. Cite your source. Keep it to two short sentences.'
+    : '<@&302> Where do plates go?' });
+  turnLatencies.push({ character: 'andy9', latencyMs: Math.round(performance.now() - started) });
   assert.equal(delivered.length, 2);
-  assert.equal(delivered[1]!.payload.username, 'Andy8');
+  assert.equal(delivered[1]!.payload.username, 'andy9');
   assert.match(delivered[1]!.payload.content, /blue shelf/);
   assert.doesNotMatch(delivered[1]!.payload.content, /Copper Finch/);
-  await gateway.handle({ ...base, id: '4', content: 'Thanks, where was that?', replyMessageId: '501' });
+  if (realClaude) {
+    assert.match(delivered[1]!.payload.content, /andy9/i);
+    assert.match(delivered[1]!.payload.content, /kitchen\.md/);
+  }
+  started = performance.now();
+  await gateway.handle({ ...base, id: '4', content: 'Thanks, where was that? Answer briefly.', replyMessageId: '501' });
+  turnLatencies.push({ character: 'Chiba (reply routing)', latencyMs: Math.round(performance.now() - started) });
   assert.equal(delivered.length, 3);
   assert.equal(delivered[2]!.payload.username, 'Chiba');
   await gateway.handle({ ...base, id: '5', content: '<@&301> loop', bot: true, webhookId: '999' });
@@ -89,12 +110,15 @@ try {
   assert.deepEqual(errors, []);
   assert.ok(delivered.every(delivery => delivery.payload.allowedMentions.parse.length === 0));
   console.log(JSON.stringify({
-    mode: 'LOCAL FIXTURES: synthetic Discord ingress/CLI; real MCP HTTP and webhook sink',
+    mode: realClaude
+      ? 'REAL CLAUDE: synthetic Discord ingress; real claude -p, local MCP HTTP and webhook sink'
+      : 'LOCAL FIXTURES: synthetic Discord ingress/CLI; real MCP HTTP and webhook sink',
     proofs: ['role mention → character', 'character-scoped MCP context', 'member role gate',
       'separate kitchen context', 'webhook persona delivery', 'reply routing', 'no bot/webhook feedback loop'],
     deliveries: delivered.map(({ payload }) => ({ character: payload.username, response: payload.content })),
+    turnLatencies,
     actualDiscordLogin: false,
-    actualClaudeInference: false,
+    actualClaudeInference: realClaude,
   }, null, 2));
 } finally {
   engine.close();

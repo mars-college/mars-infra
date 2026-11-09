@@ -15,6 +15,9 @@ const characterSchema = z.object({
   allowed_member_roles: z.array(snowflake).default([]),
   avatar_url: z.string().url().refine(value => new URL(value).protocol === 'https:').optional(),
   mcp_token_env: envName.optional(),
+  owner_discord_id: snowflake.optional(),
+  channel_ids: z.array(snowflake).min(1).optional(),
+  mcp_tools: z.array(z.enum(['list_resources', 'read_resource', 'cuelight_nodes', 'cuelight_play'])).optional(),
 }).strict();
 const configSchema = z.object({
   guild_id: snowflake,
@@ -26,6 +29,8 @@ const configSchema = z.object({
   claude_command: z.string().min(1).default('claude'),
   timeout_ms: z.number().int().min(100).max(300_000).default(90_000),
   max_queue: z.number().int().min(1).max(100).default(10),
+  api_port: z.number().int().min(1).max(65535).optional(),
+  gateway_token_env: envName.default('MARS_GATEWAY_TOKEN').optional(),
   mcp: z.object({
     url: z.string().url().refine(value => {
       const url = new URL(value);
@@ -45,6 +50,10 @@ export async function loadConfig(path: string): Promise<GatewayConfig> {
   let config: GatewayConfig;
   try {
     config = configSchema.parse(parse(await readFile(path, 'utf8')));
+    if (config.mcp && process.env.MARS_MCP_URL) {
+      config.mcp.url = process.env.MARS_MCP_URL;
+      config = configSchema.parse(config);
+    }
   } catch {
     throw new Error('Invalid character configuration; check the local file privately');
   }
@@ -58,6 +67,9 @@ export async function loadConfig(path: string): Promise<GatewayConfig> {
   }
   if (!config.mcp && config.characters.some(character => character.resources.length > 0)) {
     throw new Error('Characters with resource URIs require an MCP endpoint');
+  }
+  if (config.characters.some(character => character.channel_ids?.some(id => !config.channels.some(channel => channel.id === id)))) {
+    throw new Error('Character channels must belong to the gateway channel set');
   }
   const base = dirname(resolve(path));
   config.context_root = resolve(base, config.context_root);

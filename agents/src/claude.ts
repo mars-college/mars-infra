@@ -2,19 +2,22 @@ import { spawn } from 'node:child_process';
 import { mkdir, lstat } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { GatewayConfig } from './config.js';
+import type { CharacterMcpAccess } from './mcp.js';
+import { startCharacterMcpProxy } from './mcp-proxy.js';
 
 export interface CharacterRun {
   characterId: string;
   systemPrompt: string;
   input: string;
+  mcp?: CharacterMcpAccess;
 }
 export interface CharacterRunner {
   run(input: CharacterRun): Promise<string>;
   close?(): void;
 }
 
-// A fixed organizer-owned CLI lane, not a subscription credential broker.
-// Only native Claude login is accepted; never inherit provider/API/token secrets.
+// Fixed organizer-owned CLI lane: subscription OAuth or native Claude login.
+// Only the intentional subscription credential enters the model process.
 export class ClaudeRunner implements CharacterRunner {
   readonly #abort = new AbortController();
 
@@ -33,18 +36,38 @@ export class ClaudeRunner implements CharacterRunner {
     for (const key of ['PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'TMPDIR', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'CLAUDE_CONFIG_DIR']) {
       if (process.env[key]) env[key] = process.env[key];
     }
+    const oauthToken = process.env.CLAUDE_CODE_OAUTH_TOKEN?.trim();
+    if (oauthToken) env.CLAUDE_CODE_OAUTH_TOKEN = oauthToken;
     const authOutput = await runProcess(this.config.claude_command, ['auth', 'status'], '', cwd, env,
       Math.min(10_000, this.config.timeout_ms), this.#abort.signal);
-    let auth: { loggedIn?: boolean; authMethod?: string };
-    try { auth = JSON.parse(authOutput); } catch { throw new Error('Claude authentication status was not valid JSON'); }
-    if (auth.loggedIn !== true || auth.authMethod !== 'claude.ai') {
-      throw new Error('Operator native Claude login required; API/token/provider fallback is disabled');
+    let auth: { loggedIn?: boolean; authMethod?: string; apiProvider?: string };
+    try {
+      const parsed: unknown = JSON.parse(authOutput);
+      if (!parsed || typeof parsed !== 'object') throw new Error();
+      auth = parsed as typeof auth;
+    } catch { throw new Error('Claude authentication status was not valid JSON'); }
+    if (auth.loggedIn !== true || auth.authMethod !== (oauthToken ? 'oauth_token' : 'claude.ai') ||
+        (oauthToken ? auth.apiProvider !== 'firstParty' : auth.apiProvider !== undefined && auth.apiProvider !== 'firstParty')) {
+      throw new Error('Operator Claude subscription login required; API/provider fallback is disabled');
     }
-    const output = await runProcess(this.config.claude_command, [
-      '-p', '--safe-mode', '--tools', '', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
-      '--no-session-persistence', '--max-turns', '1', '--output-format', 'json',
-      '--system-prompt', input.systemPrompt,
-    ], input.input, cwd, env, this.config.timeout_ms, this.#abort.signal);
+    const proxy = input.mcp?.tools.length ? await startCharacterMcpProxy(input.mcp) : undefined;
+    let output: string;
+    try {
+      const mcpConfig = JSON.stringify({ mcpServers: proxy ? {
+        mars: { type: 'http', url: proxy.url, headers: { Authorization: `Bearer ${proxy.token}` } },
+      } : {} });
+      const args = [
+        '-p', '--tools', '', '--strict-mcp-config', '--mcp-config', mcpConfig,
+        '--no-session-persistence', '--max-turns', proxy ? '8' : '1', '--output-format', 'json',
+        '--system-prompt', input.systemPrompt,
+      ];
+      if (proxy) args.push('--allowedTools', ...proxy.tools.map(name => `mcp__mars__${name}`));
+      args.push(...(proxy
+        ? ['--restricted', '--setting-sources', '', '--disable-slash-commands', '--settings', '{"disableAllHooks":true}']
+        : ['--safe-mode']));
+      output = await runProcess(this.config.claude_command, args, input.input, cwd, env,
+        this.config.timeout_ms, this.#abort.signal);
+    } finally { await proxy?.close(); }
     try {
       const payload: unknown = JSON.parse(output);
       if (!payload || typeof payload !== 'object' || !('result' in payload) ||

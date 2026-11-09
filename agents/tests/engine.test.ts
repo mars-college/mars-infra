@@ -41,7 +41,7 @@ test('restricted character cannot be invoked by a missing member role or remembe
   f.config.characters[1]!.allowed_member_roles = ['700'];
   try {
     assert.deepEqual(await f.engine.handle({ ...baseMessage, id: '7', content: '<@&302> plates?' }), []);
-    assert.deepEqual(await f.engine.handle({ ...baseMessage, id: '8', content: 'plates?', replyCharacterId: 'andy8' }), []);
+    assert.deepEqual(await f.engine.handle({ ...baseMessage, id: '8', content: 'plates?', replyCharacterId: 'andy9' }), []);
     const allowed = await f.engine.handle({ ...baseMessage, id: '9', content: '<@&302> plates?', roleIds: ['700'] });
     assert.match(allowed[0]!.content, /blue shelf/);
   } finally { f.engine.close(); await rm(f.directory, { recursive: true, force: true }); }
@@ -114,7 +114,7 @@ test('the global inference queue is bounded and shutdown rejects new turns', asy
   }
 });
 
-test('bot, MCP and paid API secrets are not inherited by the CLI subprocess', async () => {
+test('only the intended subscription OAuth token, not bot/MCP/API secrets, enters the CLI', async () => {
   const f = await fixture();
   const names = ['DISCORD_BOT_TOKEN', 'MARS_MCP_TOKEN', 'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN'];
   const previous = names.map(name => process.env[name]);

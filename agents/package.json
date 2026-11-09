@@ -8,6 +8,7 @@
     "build": "tsc -p tsconfig.json",
     "test": "node --import tsx --test tests/*.test.ts",
     "smoke": "node --import tsx scripts/smoke.ts",
+    "smoke:real": "SMOKE_REAL_CLAUDE=1 node --import tsx scripts/smoke.ts",
     "start": "node dist/start.js"
   },
   "dependencies": {

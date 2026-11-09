@@ -1,7 +1,8 @@
 import { Client, Events, GatewayIntentBits, WebhookClient } from "discord.js";
-import type { Message } from "discord.js";
+import type { Message, Interaction } from "discord.js";
 import type { GatewayConfig } from "./config.js";
 import type { CharacterReply, IncomingMessage } from "./engine.js";
+import type { CharacterRegistry } from "./registry.js";
 
 export interface GatewayMessage {
   id: string;
@@ -9,6 +10,8 @@ export interface GatewayMessage {
   channelId: string;
   parentChannelId?: string | null;
   authorId: string;
+  authorName?: string;
+  createdAt?: string;
   content: string;
   bot: boolean;
   webhookId?: string | null;
@@ -27,6 +30,7 @@ export interface WebhookPayload {
 export interface DiscordTransport {
   onMessage(handler: (message: GatewayMessage) => void): () => void;
   onError(handler: () => void): () => void;
+  onCharacterCommand?(handler: (command: { guildId: string | null; actorDiscordId: string; subcommand: string; id?: string; name?: string; description?: string; avatarUrl?: string }) => Promise<unknown>): () => void;
   login(token: string): Promise<void>;
   fetchRoleIds(guildId: string, authorId: string): Promise<string[]>;
   send(channelId: string, payload: WebhookPayload): Promise<{ id: string }>;
@@ -75,7 +79,7 @@ export function discordCredentials(config: GatewayConfig, env: NodeJS.ProcessEnv
   return { token: env[config.bot_token_env]!.trim(), webhooks };
 }
 
-/** No provisioning, per-character bots, databases, or cloud coordination. */
+/** Shared bot transport; character administration uses the same authenticated app. */
 export function createDiscordTransport(credentials: DiscordCredentials): DiscordTransport {
   const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent] });
   const webhooks = new Map<string, WebhookClient>();
@@ -89,6 +93,27 @@ export function createDiscordTransport(credentials: DiscordCredentials): Discord
     throw new DiscordGatewayError("configuration", "Unable to configure Discord transport");
   }
   return {
+    onCharacterCommand(handler) {
+      const listener = async (interaction: Interaction) => {
+        if (!interaction.isChatInputCommand() || interaction.commandName !== "character") return;
+        try {
+          await interaction.deferReply({ flags: 64 });
+          const value = await handler({ guildId: interaction.guildId, actorDiscordId: interaction.user.id,
+            subcommand: interaction.options.getSubcommand(),
+            id: interaction.options.getString("id") ?? undefined,
+            name: interaction.options.getString("name") ?? undefined,
+            description: interaction.options.getString("description") ?? undefined,
+            avatarUrl: interaction.options.getString("avatar_url") ?? undefined });
+          await interaction.editReply({ content: JSON.stringify(value).slice(0, 1900), allowedMentions: { parse: [] } });
+        } catch (error) {
+          const content = error instanceof Error && ["not_owner", "not_found", "invalid"].includes(error.message) ? error.message : "Character command failed";
+          if (interaction.deferred) await interaction.editReply({ content }).catch(() => {});
+          else await interaction.reply({ content, flags: 64 }).catch(() => {});
+        }
+      };
+      client.on(Events.InteractionCreate, listener);
+      return () => { client.off(Events.InteractionCreate, listener); };
+    },
     onMessage(handler) {
       const listener = (message: Message) => {
         handler({
@@ -97,6 +122,8 @@ export function createDiscordTransport(credentials: DiscordCredentials): Discord
           channelId: message.channelId,
           parentChannelId: message.channel.isThread() ? message.channel.parentId : undefined,
           authorId: message.author.id,
+          authorName: message.author.username,
+          createdAt: message.createdAt.toISOString(),
           content: message.content,
           bot: message.author.bot,
           webhookId: message.webhookId,
@@ -162,6 +189,7 @@ export interface DiscordOptions {
   transportFactory?: (credentials: DiscordCredentials) => DiscordTransport;
   onError?: (error: DiscordGatewayError) => void;
   maxReplyMappings?: number;
+  registry?: CharacterRegistry;
 }
 
 export async function startDiscord(
@@ -198,14 +226,19 @@ export async function startDiscord(
     catch { report("member", "Discord current membership unavailable"); return; }
     const attribution = message.replyMessageId ? replies.get(message.replyMessageId) : undefined;
     const replyCharacterId = attribution?.channelId === channelId && attribution.threadId === threadId
-      ? attribution.characterId : undefined;
+      ? attribution.characterId : message.replyMessageId ? options.registry?.replyCharacter(message.replyMessageId, message.channelId) : undefined;
     let generated: CharacterReply[];
+    options.registry?.receive({ id: message.id, guildId: message.guildId, channelId, authorId: message.authorId,
+      authorName: message.authorName, createdAt: message.createdAt, content: message.content, roleIds,
+      bot: false, replyCharacterId });
     try {
       generated = await engine.handle({
         id: message.id,
         guildId: message.guildId,
         channelId,
         authorId: message.authorId,
+        ...(message.authorName !== undefined ? { authorName: message.authorName } : {}),
+        ...(message.createdAt !== undefined ? { createdAt: message.createdAt } : {}),
         content: message.content,
         roleIds,
         bot: false,
@@ -229,6 +262,7 @@ export async function startDiscord(
             allowedMentions: { parse: [], users: [], roles: [], repliedUser: false },
           });
           replies.set(sent.id, { characterId: reply.characterId, channelId, threadId });
+          options.registry?.recordReply(sent.id, reply.characterId, threadId ?? channelId);
           if (replies.size > maxMappings) replies.delete(replies.keys().next().value!);
         } catch { report("delivery", "Discord character delivery failed"); return; }
       }
@@ -242,10 +276,12 @@ export async function startDiscord(
   };
   let removeMessage = () => {};
   let removeError = () => {};
+  let removeCommands = () => {};
   const close = (): Promise<void> => {
     if (!closePromise) {
       closing = true;
       removeMessage();
+      removeCommands();
       closePromise = (async () => {
         await Promise.all([...pending]);
         try { await transport.close(); } catch { report("shutdown", "Discord shutdown failed"); }
@@ -258,6 +294,7 @@ export async function startDiscord(
   try {
     removeError = transport.onError(() => { report("gateway", "Discord gateway error"); });
     removeMessage = transport.onMessage((message) => { void handle(message); });
+    if (options.registry && transport.onCharacterCommand) removeCommands = transport.onCharacterCommand(command => options.registry!.command(command));
     await transport.login(credentials.token);
   } catch {
     await close();
