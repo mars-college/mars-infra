@@ -45,6 +45,7 @@ const characterOverride = z.object({
   id: z.enum(['chiba', 'andy9']), prompt: z.string().min(1).max(8000).optional(),
   context_files: z.array(z.string().min(1)).max(10).optional(),
   resources: z.array(z.string().url()).max(10).optional(),
+  channel_ids: z.array(snowflake).min(1).optional(),
   avatar_url: z.string().url().refine(value => new URL(value).protocol === 'https:').optional(),
   mcp_token_env: envName.optional(),
   mcp_tools: z.array(z.enum(['list_resources', 'read_resource', 'cuelight_nodes', 'cuelight_play'])).optional(),
@@ -74,6 +75,10 @@ const inputSchema = z.object({
   if (new Set(input.gateway.characters.map(character => character.id)).size !== input.gateway.characters.length ||
       (!input.gateway.mcp && input.gateway.characters.some(character => character.resources?.length))) {
     context.addIssue({ code: z.ZodIssueCode.custom, message: 'Invalid character configuration' });
+  }
+  if (input.gateway.characters.some(character => character.channel_ids) &&
+      (input.fallback_channel_ids.length || input.gateway.characters.some(character => !character.channel_ids))) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: 'Specify channels for every configured character without fallback channels' });
   }
 });
 export type ProvisionInput = z.input<typeof inputSchema>;
@@ -118,6 +123,11 @@ export type ProvisionResult = { status: 'not-installed' } | {
   status: 'provisioned'; config: GatewayConfig; credentials: Record<string, string>; roleIds: Record<string, string>;
 };
 
+const defaultCharacters = [
+  { id: 'chiba', name: 'Chiba', channel: 'mars-general', prompt: 'You are Chiba, a concise Mars community and MIT knowledge assistant. Use the supplied context and resources; do not invent community facts.' },
+  { id: 'andy9', name: 'andy9', channel: 'mars-kitchen', prompt: 'You are andy9, a practical Mars community kitchen assistant. Use the supplied context and resources; do not invent kitchen facts.' },
+] as const;
+
 function parseInput(value: unknown): ParsedInput {
   try { return inputSchema.parse(value); } catch { throw new ProvisioningError(); }
 }
@@ -132,36 +142,53 @@ export async function provisionFixtures(value: ProvisionInput, rest: DiscordRest
     if (error instanceof ProvisioningError && (error.status === 403 || error.status === 404)) return { status: 'not-installed' };
     throw error;
   }
+  const explicitChannels = input.gateway.characters.some(character => character.channel_ids);
+  const defaults = explicitChannels
+    ? defaultCharacters.filter(character => input.gateway.characters.some(override => override.id === character.id))
+    : defaultCharacters;
+  const existing = await rest.request<Channel[]>('GET', `${guild}/channels`);
+  const channelsByCharacter = new Map<string, string[]>();
+  if (explicitChannels) {
+    const textChannels = new Set(existing.filter(channel => channel.type === 0).map(channel => channel.id));
+    for (const character of input.gateway.characters) {
+      const ids = [...new Set(character.channel_ids)];
+      if (ids.some(id => !textChannels.has(id))) throw new ProvisioningError(404);
+      channelsByCharacter.set(character.id, ids);
+    }
+  }
   const bot = await rest.request<{ id: string }>('GET', '/users/@me');
   const application = await rest.request<{ id: string }>('GET', '/oauth2/applications/@me');
   const roles = await rest.request<Role[]>('GET', `${guild}/roles`);
   const roleIds: Record<string, string> = {};
-  for (const name of ['mars-2027', 'Chiba', 'andy9']) {
+  for (const name of ['mars-2027', ...defaults.map(character => character.name)]) {
     let role = roles.find(item => item.name === name);
-    if (!role) role = await rest.request<Role>('POST', `${guild}/roles`, { name, permissions: '0', mentionable: true });
-    else if (role.permissions !== '0' || !role.mentionable) {
+    if (explicitChannels && name !== 'mars-2027' && role && role.permissions !== '0') {
+      throw new ProvisioningError(403);
+    }
+    const cohortRole = explicitChannels && name === 'mars-2027';
+    if (!role) role = await rest.request<Role>('POST', `${guild}/roles`, { name, permissions: '0', mentionable: !cohortRole });
+    else if (!cohortRole && (role.permissions !== '0' || !role.mentionable)) {
       role = await rest.request<Role>('PATCH', `${guild}/roles/${role.id}`, { permissions: '0', mentionable: true });
     }
     roleIds[name] = role.id;
   }
-  const existing = await rest.request<Channel[]>('GET', `${guild}/channels`);
-  const allowed: Channel[] = [];
-  const channelByPurpose: Record<string, string> = {};
-  for (const [index, name] of ['mars-general', 'mars-kitchen'].entries()) {
-    let channel = existing.find(item => item.name === name && item.type === 0);
-    if (!channel) {
-      try { channel = await rest.request<Channel>('POST', `${guild}/channels`, { name, type: 0 }); }
-      catch (error) {
-        if (!(error instanceof ProvisioningError) || error.status !== 403) throw error;
-        const fallbackId = input.fallback_channel_ids[index] ?? input.fallback_channel_ids[0];
-        channel = existing.find(item => item.id === fallbackId && item.type === 0);
-        if (!channel) throw new ProvisioningError(403);
+  if (!explicitChannels) {
+    for (const [index, character] of defaults.entries()) {
+      const name = character.channel;
+      let channel = existing.find(item => item.name === name && item.type === 0);
+      if (!channel) {
+        try { channel = await rest.request<Channel>('POST', `${guild}/channels`, { name, type: 0 }); }
+        catch (error) {
+          if (!(error instanceof ProvisioningError) || error.status !== 403) throw error;
+          const fallbackId = input.fallback_channel_ids[index] ?? input.fallback_channel_ids[0];
+          channel = existing.find(item => item.id === fallbackId && item.type === 0);
+          if (!channel) throw new ProvisioningError(403);
+        }
       }
+      channelsByCharacter.set(character.id, [channel.id]);
     }
-    allowed.push(channel);
-    channelByPurpose[name] = channel.id;
   }
-  const channelIds = [...new Set(allowed.map(channel => channel.id))];
+  const channelIds = [...new Set([...channelsByCharacter.values()].flat())];
   const credentials: Record<string, string> = {};
   const channels: GatewayConfig['channels'] = [];
   for (const id of channelIds) {
@@ -181,13 +208,10 @@ export async function provisionFixtures(value: ProvisionInput, rest: DiscordRest
     await rest.request('PATCH', `${commandsPath}/${command.id}`, CHARACTER_COMMAND);
   }
   const { characters: overrides, ...runtime } = input.gateway;
-  const characters: GatewayConfig['characters'] = [
-    { id: 'chiba', name: 'Chiba', prompt: 'You are Chiba, a concise Mars community and MIT knowledge assistant. Use the supplied context and resources; do not invent community facts.' },
-    { id: 'andy9', name: 'andy9', prompt: 'You are andy9, a practical Mars community kitchen assistant. Use the supplied context and resources; do not invent kitchen facts.' },
-  ].map(character => ({
-    context_files: [], resources: [], ...character, ...overrides.find(item => item.id === character.id),
-    role_id: roleIds[character.name]!, owner_discord_id: input.owner_discord_id,
-    channel_ids: [channelByPurpose[character.id === 'andy9' ? 'mars-kitchen' : 'mars-general']!],
+  const characters: GatewayConfig['characters'] = defaults.map(({ id, name, prompt }) => ({
+    context_files: [], resources: [], id, name, prompt, ...overrides.find(item => item.id === id),
+    role_id: roleIds[name]!, owner_discord_id: input.owner_discord_id,
+    channel_ids: channelsByCharacter.get(id)!,
     allowed_member_roles: [roleIds['mars-2027']!],
   }));
   return { status: 'provisioned', roleIds, credentials, config: {

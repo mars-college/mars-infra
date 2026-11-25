@@ -121,6 +121,13 @@ before invoking the hosted characters. After provisioning, restart the managed
 service. While the bot is absent the service serves health/registry on loopback
 and reports `waiting_for_guild_install`; it does not attempt Discord delivery.
 
+For an existing guild, instead set `channel_ids` to the IDs of approved text
+channels on **each** `gateway.characters` entry and omit `fallback_channel_ids`.
+Provisioning then checks those channels before making changes, provisions only
+the listed characters, uses only those channels, and creates no new channels.
+Existing cohort-role permissions and mention settings are left unchanged.
+
+
 ## Puppetmaster registry and API
 
 SQLite `characters.sqlite` lives in `state_root`, with owner identities, external

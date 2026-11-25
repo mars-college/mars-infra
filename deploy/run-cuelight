@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+public_url=${CUELIGHT_CONTROL_PUBLIC_URL:?}
+database_url=${CUELIGHT_CONTROL_DATABASE_URL:?}
+set -a
+. /var/lib/cuelight-control/cuelight-control.env
+CUELIGHT_CONTROL_PUBLIC_URL=$public_url
+CUELIGHT_CONTROL_DATABASE_URL=$database_url
+set +a
+exec cuelight-control "$@"

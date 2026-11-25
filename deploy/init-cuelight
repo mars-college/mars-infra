@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+state=/var/lib/cuelight-control
+cuelight-control init --exists-ok --dir "$state" --hostname cuelight-control --network-name Cuelight
+# Only the public CA certificate is shared with Caddy; not the PKI or CAS.
+install -m 644 "$state/tls/server-root.pem" /etc/cuelight/server-root.pem

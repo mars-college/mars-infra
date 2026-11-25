@@ -63,6 +63,35 @@ class FakeRest implements DiscordRest {
   }
 }
 
+const explicitInput: ProvisionInput = {
+  ...input,
+  fallback_channel_ids: [],
+  gateway: { ...input.gateway, characters: [{ id: 'chiba', channel_ids: ['201', '200', '201'] }] },
+};
+
+test('explicit channels provision only configured characters and do not change the cohort role', async () => {
+  const rest = new FakeRest();
+  const result = await provisionFixtures(explicitInput, rest);
+  assert.equal(result.status, 'provisioned');
+  if (result.status !== 'provisioned') return;
+  assert.deepEqual(Object.keys(result.roleIds), ['mars-2027', 'Chiba']);
+  assert.deepEqual(rest.roles[0], { id: '300', name: 'mars-2027', permissions: '8', mentionable: false });
+  assert.deepEqual(result.config.characters.map(({ id, channel_ids }) => [id, channel_ids]), [['chiba', ['201', '200']]]);
+  assert.deepEqual(result.config.channels.map(channel => channel.id), ['201', '200']);
+  assert.equal(rest.channels.length, 2);
+  const writeCount = rest.writes.length;
+  assert.deepEqual(await provisionFixtures(explicitInput, rest), result);
+  assert.equal(rest.writes.length, writeCount);
+});
+
+test('explicit channels reject unknown or mixed channel settings before writing to Discord', async () => {
+  const rest = new FakeRest();
+  const character = { id: 'chiba' as const, channel_ids: ['999'] };
+  await assert.rejects(provisionFixtures({ ...explicitInput, gateway: { ...input.gateway, characters: [character] } }, rest));
+  await assert.rejects(provisionFixtures({ ...input, gateway: { ...input.gateway, characters: [character] } }, rest));
+  assert.equal(rest.writes.length, 0);
+});
+
 test('fixture provisioning repairs roles, creates fixtures, and is mutation-free on repeat', async () => {
   const rest = new FakeRest();
   const first = await provisionFixtures(input, rest);

@@ -40,7 +40,10 @@ never reads credentials, fetches logs, connects remotely or changes services.
 Tests use local HTTP fixtures and synthetic OS identities; they do not exercise
 host credentials or deploy services.
 
-## Hosting later
+## Hosting
+
+[`deploy/`](deploy/README.md) runs MCP, the character gateway, and Cuelight
+with PostgreSQL and automatic HTTPS on a single Linux VM.
 
 [`systemd/mars-mcp.service`](systemd/mars-mcp.service) is a generic rootless
 Podman example, **not a record of an existing deployment**. It uses conventional

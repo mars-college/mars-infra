@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# Run as root on a dedicated Ubuntu 24.04 VM with a working SSH key.
+set -euo pipefail
+umask 022
+[ "$EUID" -eq 0 ] || { echo 'Run bootstrap as root.' >&2; exit 1; }
+. /etc/os-release
+[ "$ID/$VERSION_ID" = ubuntu/24.04 ] || { echo 'Ubuntu 24.04 is required.' >&2; exit 1; }
+export DEBIAN_FRONTEND=noninteractive
+
+# Ubuntu loads drop-ins in lexical order, with the first value winning.
+cat >/etc/ssh/sshd_config.d/00-mars-key-only.conf <<'EOF'
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+AuthenticationMethods publickey
+PermitRootLogin prohibit-password
+EOF
+sshd -t
+systemctl reload ssh
+
+apt-get update
+apt-get install -y ca-certificates curl ufw unattended-upgrades
+ufw default deny incoming
+ufw default allow outgoing
+ufw default deny routed
+ufw allow 22/tcp
+ufw allow 80/tcp
+ufw allow 443/tcp
+ufw --force enable
+cat >/etc/apt/apt.conf.d/20auto-upgrades <<'EOF'
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+EOF
+systemctl enable --now apt-daily.timer apt-daily-upgrade.timer
+
+# Replace the cloud image's swapfile if needed; leave non-swap files alone.
+swapfile=/swapfile
+if [ ! -f "$swapfile" ] || [ "$(stat -c %s "$swapfile")" != 2147483648 ]; then
+  if [ -e "$swapfile" ]; then
+    [ "$(blkid -s TYPE -o value "$swapfile")" = swap ] || { echo 'Existing /swapfile is not swap.' >&2; exit 1; }
+    if swapon --noheadings --show=NAME | grep -Fxq "$swapfile"; then swapoff "$swapfile"; fi
+  fi
+  install -m 600 /dev/null "$swapfile"
+  fallocate -l 2G "$swapfile"
+  mkswap "$swapfile"
+fi
+if ! swapon --noheadings --show=NAME | grep -Fxq "$swapfile"; then swapon "$swapfile"; fi
+if ! grep -Eq '^/swapfile[[:space:]]' /etc/fstab; then
+  printf '/swapfile none swap sw 0 0\n' >>/etc/fstab
+fi
+
+install -d -m 0755 /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+chmod a+r /etc/apt/keyrings/docker.asc
+cat >/etc/apt/sources.list.d/docker.sources <<EOF
+Types: deb
+URIs: https://download.docker.com/linux/ubuntu
+Suites: $VERSION_CODENAME
+Components: stable
+Architectures: $(dpkg --print-architecture)
+Signed-By: /etc/apt/keyrings/docker.asc
+EOF
+apt-get update
+apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+systemctl enable --now docker

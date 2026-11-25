@@ -1,0 +1,151 @@
+name: mars
+
+x-service: &service
+  restart: unless-stopped
+  logging:
+    driver: local
+
+x-control: &control
+  image: mars-cuelight-control:0.2.10
+  build:
+    context: .
+    dockerfile: cuelight.Dockerfile
+  volumes:
+    - cuelight:/var/lib/cuelight-control
+
+services:
+  caddy:
+    <<: *service
+    image: caddy:2-alpine
+    mem_limit: 96m
+    ports: ["80:80/tcp", "443:443/tcp"]
+    environment:
+      MCP_HOST: ${MCP_HOST:?set MCP_HOST}
+      CUELIGHT_HOST: ${CUELIGHT_HOST:?set CUELIGHT_HOST}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - cuelight_ca:/etc/cuelight:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      cuelight-init:
+        condition: service_completed_successfully
+
+  mars-mcp:
+    <<: *service
+    image: mars-mcp:${MARS_MCP_REV:?set MARS_MCP_REV}
+    build:
+      context: .
+      dockerfile: mcp.Dockerfile
+      additional_contexts:
+        mcp_source: ${MARS_MCP_CHECKOUT:-../../mars-mcp}
+      args:
+        MARS_MCP_REV: ${MARS_MCP_REV}
+    mem_limit: 320m
+    env_file:
+      - path: ${MARS_CONFIG_DIR:?set MARS_CONFIG_DIR}/mcp.env
+        format: raw
+    environment:
+      PORT: "4400"
+      BIND_HOST: 0.0.0.0
+      PUBLIC_URL: https://${MCP_HOST}
+      AUTH_DATABASE_PATH: /state/auth.sqlite
+      MARS_RESOURCE_CATALOG: /catalog/resources.json
+      MARS_RESOURCE_ROOT: /catalog/documents
+      CUELIGHT_URL: https://${CUELIGHT_HOST}
+      CUELIGHT_YT_DLP: /usr/local/bin/yt-dlp
+      CUELIGHT_FFMPEG: /usr/bin/ffmpeg
+      CUELIGHT_VIDEO_SCRATCH: /state/video-scratch
+      MARS_GATEWAY_URL: http://127.0.0.1:4401
+    volumes:
+      - mcp_state:/state
+      - ${MARS_CATALOG_DIR:?set MARS_CATALOG_DIR}:/catalog:ro
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4400/healthz').then(r=>process.exit(+!r.ok)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 4s
+      retries: 5
+
+  mars-agents:
+    <<: *service
+    build:
+      context: ..
+      dockerfile: deploy/gateway.Dockerfile
+    mem_limit: 640m
+    # The gateway API binds only to loopback. Share it with MCP, not the bridge.
+    network_mode: service:mars-mcp
+    depends_on:
+      mars-mcp:
+        condition: service_healthy
+        restart: true
+    env_file:
+      - path: ${MARS_CONFIG_DIR}/gateway.env
+        format: raw
+      - path: ${MARS_CONFIG_DIR}/discord/webhooks.env
+        required: false
+        format: raw
+    environment:
+      MARS_CHARACTERS_CONFIG: /discord/characters.yaml
+      MARS_MCP_URL: https://${MCP_HOST}/mcp
+      DISABLE_AUTOUPDATER: "1"
+    volumes:
+      - gateway_state:/state
+      - ${MARS_CONFIG_DIR}/discord:/discord:ro
+      - ${MARS_AGENT_CONTEXT_DIR:?set MARS_AGENT_CONTEXT_DIR}:/context:ro
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4401/healthz').then(r=>process.exit(+!r.ok)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 4s
+      retries: 5
+
+  postgres:
+    <<: *service
+    image: postgres:17-alpine
+    mem_limit: 256m
+    command: ["postgres", "-c", "shared_buffers=48MB", "-c", "work_mem=2MB", "-c", "max_connections=30"]
+    environment:
+      POSTGRES_USER: cuelight
+      POSTGRES_DB: cuelight
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set a URL-safe POSTGRES_PASSWORD}
+    volumes:
+      - postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "cuelight", "-d", "cuelight"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  cuelight-init:
+    <<: *control
+    restart: "no"
+    mem_limit: 96m
+    entrypoint: ["/usr/local/bin/init-cuelight"]
+    volumes:
+      - cuelight:/var/lib/cuelight-control
+      - cuelight_ca:/etc/cuelight
+
+  cuelight-control:
+    <<: [*control, *service]
+    mem_limit: 160m
+    environment:
+      CUELIGHT_CONTROL_DATABASE_URL: postgres://cuelight:${POSTGRES_PASSWORD}@postgres:5432/cuelight?sslmode=disable
+      CUELIGHT_CONTROL_PUBLIC_URL: https://${CUELIGHT_HOST}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      cuelight-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "--cacert", "/var/lib/cuelight-control/tls/server-root.pem", "--resolve", "cuelight-control:8443:127.0.0.1", "https://cuelight-control:8443/health"]
+      interval: 10s
+      timeout: 4s
+      retries: 5
+
+volumes:
+  caddy_data:
+  caddy_config:
+  cuelight_ca:
+  cuelight:
+  postgres:
+  mcp_state:
+  gateway_state:

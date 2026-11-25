@@ -1,0 +1,11 @@
+{$MCP_HOST} {
+	reverse_proxy mars-mcp:4400
+}
+
+{$CUELIGHT_HOST} {
+	reverse_proxy https://cuelight-control:8443 {
+		transport http {
+			tls_trust_pool file /etc/cuelight/server-root.pem
+		}
+	}
+}

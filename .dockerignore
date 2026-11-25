@@ -1,0 +1,11 @@
+**
+!agents/
+!agents/package.json
+!agents/package-lock.json
+!agents/tsconfig.json
+!agents/src/
+!agents/src/**
+!agents/scripts/
+!agents/scripts/provision.ts
+!deploy/
+!deploy/run-gateway.mjs
